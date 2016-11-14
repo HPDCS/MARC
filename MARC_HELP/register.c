@@ -9,6 +9,9 @@
 #define NRRD_MASK 0X00000000ffffffffLL	// mask of the reader counter
 #define NRRD_LENG 32
 #define EMPTY 0XffffffffffffffffLL
+#define HELP_ME 0XfffffffffffffffeLL
+#define NONE 0XffffffffffffffffLL
+#define MAX_TRIES 7
 
 struct wf_register {
 	unsigned long long current; 		// composed by [32 bit of index ||32 bit of counter] 
@@ -19,6 +22,10 @@ struct wf_register {
 	unsigned int writers_registered;	// number of writers registered
 	unsigned int readers_registered;	// number of readers registered
 	unsigned long long next_free_slot;	// next slot to use
+	
+	unsigned long long slots;					//total number of slots allocated
+	unsigned int *slots_stauts;			//array containing the status of each slot
+	unsigned long long *help;					//array containing the help request
 };
 
 struct register_slot {
@@ -32,13 +39,12 @@ struct reader_slot{
 	//unsigned int id;					// ID associated to the writer in the init phase
 	struct wf_register *parent;				// address of the struct of the referred register
 	unsigned int current;				// index of the slot to wich the the calue_loc is referred
-	//unsigned int size;					// size of memory of the data associated to the slot (used for variable size register)
-	//void *value_loc; 					// pointer to the register value corresponding to this slot
 };
 
 struct writer_slot{
-	//unsigned int id;					// ID associated to the writer in the init phase
+	unsigned int id;					// ID associated to the writer in the init phase
 	struct wf_register *parent;			// address of the struct of the referred register
+	unsigned int last_helped;			// address of the last helped writer
 };
 
 void print_snapshot(struct wf_register *reg){
@@ -50,14 +56,13 @@ void print_snapshot(struct wf_register *reg){
 	}	
 }
 
-
 /**
 * Init the register allocating the needed amount of memory and calculate the base for the current value.
 *
 * @author Mauro Ianni
 * @param the number of writers and readers, and the size of the register
 * @return a pointer to the instance of the register
-* @date 24/02/2016
+* @date 11/11/2016
 */
 struct wf_register *_reg_init(unsigned int n_wrts, unsigned int n_rdrs, unsigned int size){	
 
@@ -75,19 +80,37 @@ struct wf_register *_reg_init(unsigned int n_wrts, unsigned int n_rdrs, unsigned
 	reg->current = 0;
 	reg->next_free_slot = EMPTY;
 	
-	if((reg->rw_space = malloc((reg->readers+2)*sizeof(struct register_slot)))==NULL){
+	reg->slots = n_rdrs + n_wrts*2 +1; //forse il +1 non serve
+	
+	/* Allocating the memory buffer */
+	if((reg->rw_space = malloc((reg->slots)*sizeof(struct register_slot)))==NULL){
 		printf("malloc failed\n");
         abort();
 	}	
+	
+	if((reg->slots_stauts = malloc((reg->slots)*sizeof(unsigned int)))==NULL){
+		printf("malloc failed\n");
+        abort();
+	}	
+	
+	if((reg->help = malloc((n_wrts)*sizeof(unsigned int)))==NULL){
+		printf("malloc failed\n");
+        abort();
+	}	
+	
 	/* if the register is static, the memory is preallocated */
-	for(i = 0; i < n_rdrs + 2; i++){
+	for(i = 0; i < reg->slots; i++){
 		reg->rw_space[i].r_started = 0;
 		reg->rw_space[i].r_endend = 0;
+		reg->slots_stauts[i] = 0;
 		if((reg->rw_space[i].value_loc = malloc(size))==NULL){
 			printf("malloc failed\n");
 			abort();
 		}
 		reg->rw_space[i].size = size;
+	}	
+	for(i = 0; i < n_wrts; i++){
+		reg->help[i] = NONE;
 	}	
 
 	/* At the begin the register is setted to zero */
@@ -104,7 +127,7 @@ struct wf_register *_reg_init(unsigned int n_wrts, unsigned int n_rdrs, unsigned
 * @author Mauro Ianni
 * @param the pointer to the register
 * @return A pointer to the structure used by the reader to work with the register
-* @date 10/03/2016
+* @date 11/11/2016
 */
 struct reader_slot *reader_init(struct wf_register *reg){
 	struct reader_slot *rd_slt;
@@ -136,26 +159,140 @@ struct reader_slot *reader_init(struct wf_register *reg){
 * @author Mauro Ianni
 * @param the pointer to the register
 * @return A pointer to the structure used by the writer to work with the register
-* @date 10/03/2016
+* @date 11/11/2016
 */
 struct writer_slot *writer_init(struct wf_register *reg){
 	struct writer_slot *wr_slt;
-	/*unsigned int id;
+	unsigned int id;
 		
 	id = __sync_fetch_and_add(&(reg->writers_registered),1);
 	if(id >= reg->writers){
 		__sync_fetch_and_add(&(reg->writers_registered),-1);
-		return NULL;//return ~0;//id = 0;
-	}*/
+		return NULL;
+	}
 	
 	if((wr_slt = malloc(sizeof(struct writer_slot)))==NULL){
 		printf("malloc failed\n");
         abort();
 	}
-	//wr_slt->id = id;
+	wr_slt->id = id;
+	wr_slt->last_helped = id;
 	wr_slt->parent = reg;
 	
 	return wr_slt;
+}
+
+/**
+* Search and return a free slot
+*
+* @author Mauro Ianni
+* @param the pointer to the writer register slot
+* @return the index of a free slot
+* @date 11/11/2016
+* @note If is used a size!=0 with a fixed size register, the size parameter is ignored
+*/
+unsigned long long get_free_slot(struct writer_slot *wr_slt){
+	unsigned long long tries, current_index, i,ret,ret_tmp,me;
+	struct wf_register * reg;
+		
+	reg = wr_slt->parent;
+	me= wr_slt->id;
+	ret = NONE;
+	i = EMPTY;
+	
+	current_index = (reg->current) >> NRRD_LENG;
+	
+	if(reg->next_free_slot != EMPTY){
+		i = reg->next_free_slot; //non faccio un exchange perchè in realtà mi sta bene che lo leggano piu writer
+		__sync_val_compare_and_swap(&reg->next_free_slot, i, EMPTY); //se pesa posso toglierla
+	}
+	if(i == EMPTY){
+		i = (current_index + 1) % (reg->slots); 
+	}
+	
+	/* search a free slot to use starting from the last one*/
+	tries = 0;
+	while(1){ 	
+		
+		/* if the slot is empty try to get it */
+		if(reg->slots_stauts[i]==0){
+			if(__sync_bool_compare_and_swap(&reg->slots_stauts[i], 0, 1)){
+				ret_tmp = i;
+				break;
+			}
+		}
+		
+		/* manage the help request*/
+		if(tries >= MAX_TRIES){
+			if(tries==MAX_TRIES){ //raggiunto il limite tentativi chiedo aiuto
+				__sync_bool_compare_and_swap(&reg->help[me], NONE, HELP_ME); //<--non dovrebbe fallire mai
+				printf("Please, help me\n"); //da cancellare
+			}	
+			if(reg->help[me]!=HELP_ME){ //se
+				break;
+			}
+		}
+		/* update index and counter */
+		tries++;
+		i = (i + 1) % (reg->slots);
+	}
+	
+	if(reg->help[me] != NONE){
+		if((ret = __sync_lock_test_and_set(&reg->help[me], NONE)) != HELP_ME){
+			printf("Someone help me!!!!\n");//da cancellare
+			if(ret_tmp != NONE){ //questo si verifica quando ho preso uno slot da solo e contemporaneamente ne ho ricevuto un altro
+					reg->slots_stauts[ret_tmp]=0; //in tal caso rilascio lo slot preso !!! è da fare in modo atomico?
+			}
+			return ret;
+		}
+	}
+	//se non ho chiesto aiuto, è sicuro che ho preso uno slot da me
+	return ret_tmp;
+	
+}
+
+
+/**
+* Search and return a free slot
+*
+* @author Mauro Ianni
+* @param the pointer to the writer register slot and the index of the writer to help
+* @return possibly the index of a free slot
+* @date 11/11/2016
+* @note It try to get a slot in a lock-free manner until the needy is still asking for it. This make this function wait-free
+*/
+unsigned long long help(struct writer_slot *wr_slt, unsigned int needy){
+	unsigned long long current_index, i;
+	struct wf_register * reg;
+		
+	reg = wr_slt->parent;
+	
+	current_index = (reg->current) >> NRRD_LENG;
+	
+	if(reg->next_free_slot != EMPTY){
+		i = reg->next_free_slot; 
+	}
+	else{
+		i = (current_index + 1) % (reg->slots); 
+	}
+	
+	/* search a free slot to use starting from the last one*/
+	while(reg->help[needy]==HELP_ME){ 	
+		/* if the slot is empty try to get it */
+		if(reg->slots_stauts[i]==0){
+			if(__sync_bool_compare_and_swap(&reg->slots_stauts[i], 0, 1)){
+				if(__sync_bool_compare_and_swap(&reg->help[needy], HELP_ME, i)){
+					return NONE;
+				}
+				else{
+					return i;
+				}
+			}	
+		}
+		/* update index and counter */
+		i = (i + 1) % (reg->slots);
+	}
+	return NONE;
 }
 
 /**
@@ -169,28 +306,16 @@ struct writer_slot *writer_init(struct wf_register *reg){
 */
 void *_reg_write(struct writer_slot *wr_slt, void *val, unsigned int size){
 	//unsigned int size_slot;
-	unsigned long long current_tmp, current_index, i,da_cancellare;
+	unsigned long long current_old, current_index, i, outing;
 	struct wf_register * reg;
 	
 	reg = wr_slt->parent;
 	
-	current_index = (reg->current) >> NRRD_LENG;
-	//i = (current_index + 1) % (reg->readers + 2); 
-	if(reg->next_free_slot != EMPTY){
-		i = da_cancellare = reg->next_free_slot;
-		reg->next_free_slot = EMPTY;
-		
+	wr_slt->last_helped = (wr_slt->last_helped + 1) % (reg->writers); //prendo l'ultimo id aiutato
+	if((i = help(wr_slt, wr_slt->last_helped)) == NONE){
+		i = get_free_slot(wr_slt);
 	}
-	else{
-		i = (current_index + 1) % (reg->readers + 2); 
-	}
-	/* search a free slot to use starting from the last one*/
-	while(1){ 		
-		if(  ((reg->rw_space[i].r_started) == (reg->rw_space[i].r_endend)) && (current_index != i)  ){ //<- forse il controllo sul current non serve poichè DEVE trovare un registro libero prima di raggiungerlo
-			break;
-		}
-		i = (i + 1) % (reg->readers + 2);
-	}
+	
 	/* For variable size register, allocate memory for the new buffer and update the size parameter of the slot(if necessary)*/
 	if(reg->size_slot==0 && reg->rw_space[i].size != size){
 		reg->rw_space[i].size = size;
@@ -206,10 +331,16 @@ void *_reg_write(struct writer_slot *wr_slt, void *val, unsigned int size){
 	reg->rw_space[i].r_endend = 0;
 	
 	/* prepare the new current swap it with the old one, making the new value visible*/
-	current_tmp = __sync_lock_test_and_set(&reg->current, i << NRRD_LENG);
+	current_old = __sync_lock_test_and_set(&reg->current, (i << NRRD_LENG)+1);
+	current_index = current_old >> NRRD_LENG;
 	
 	/* update the r_started field in the old slot or free the memory used */
-	reg->rw_space[current_index].r_started = (unsigned int)(current_tmp & NRRD_MASK);
+	reg->rw_space[current_index].r_started = (unsigned int)(current_old & NRRD_MASK);
+	/* free the slot if it is not used by readers */
+	outing = __sync_add_and_fetch(&(reg->rw_space[current_index].r_endend), 1); //<-se il current è cambiato, libero il vecchio slot
+	if(outing == (current_old & NRRD_MASK)){
+		__sync_bool_compare_and_swap(&reg->slots_stauts[current_index],1,0); //<-- non dovrebbe poter fallire
+	}
 	
 	return reg->rw_space[i].value_loc; //forse per correttezza poi sarà meglio toglierlo
 }
@@ -224,8 +355,7 @@ void *_reg_write(struct writer_slot *wr_slt, void *val, unsigned int size){
 * @date 10/03/2016
 */
 void *reg_read(struct reader_slot *rd_slt){
-	unsigned long long my_current, tmp_current;
-	unsigned int re;
+	unsigned long long my_current, tmp_current, outing;
 	struct wf_register * reg;
 	
 	reg = rd_slt->parent;
@@ -238,8 +368,9 @@ void *reg_read(struct reader_slot *rd_slt){
 		return reg->rw_space[my_current].value_loc; //<-qui il current potrebbe essere cambiato, ma comunque mi sta bene il vecchio perchè era ancora il current ad inizio lettura
 	}
 	/* if the current is changed, it is possible to free the old slot */
-	re = __sync_add_and_fetch(&(reg->rw_space[my_current].r_endend), 1); //<-se il current è cambiato, libero il vecchio slot
-	if(re == reg->rw_space[my_current].r_started){
+	outing = __sync_add_and_fetch(&(reg->rw_space[my_current].r_endend), 1); //<-se il current è cambiato, libero il vecchio slot
+	if(outing == reg->rw_space[my_current].r_started){
+		__sync_bool_compare_and_swap(&reg->slots_stauts[my_current],1,0); //<-- non dovrebbe poter fallire
 		reg->next_free_slot = my_current;
 	}
 	
@@ -247,9 +378,6 @@ void *reg_read(struct reader_slot *rd_slt){
 	tmp_current = (unsigned long long) __sync_add_and_fetch(&(reg->current), 1);
 	tmp_current = tmp_current >> NRRD_LENG;
 	rd_slt->current = (unsigned int) tmp_current;
-	//rd_slt->size = reg->rw_space[my_current].size;
-	//rd_slt->value_loc = reg->rw_space[my_current].value_loc;
-	//Se nel frattempo il current cambia, non mi interessa, perchè tanto questo era concorente
 	return reg->rw_space[tmp_current].value_loc;
 }
 

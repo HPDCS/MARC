@@ -141,6 +141,7 @@ int main(int argn, char *argv[]) {
     size = atoi(argv[3]);
     
     if(argn == 9){
+		printf("Op/Time test\n\n");
 		busy_write = atoi(argv[4]);
 		busy_read = atoi(argv[5]);
 		duration = atoi(argv[6]);
@@ -148,6 +149,7 @@ int main(int argn, char *argv[]) {
 		load_reader = atoi(argv[8]);
 	}
 	else if (argn == 10){
+		printf("Time/Op test\n\n");
 		busy_write = atoi(argv[4]);
 		busy_read = atoi(argv[5]);		
 		end_write = atoi(argv[6]);
@@ -179,7 +181,7 @@ int main(int argn, char *argv[]) {
     }
 
 	sleep(1);
-	startEnergy();
+	//startEnergy();
 	printf("\n\n+===================================================================================O\n");
 	printf("START TEST on REGISTER(%u,%u) of size %u for %u seconds:\n\n", writers, readers, size, duration);
 	
@@ -198,7 +200,7 @@ int main(int argn, char *argv[]) {
 	for(i = 0; i < readers; i++)  tot_count_read +=count_read[i];
 	printf("TOTAL READ: %u\n", tot_count_read);
 	printf("TOTAL OPER: %u\n", tot_count_read+count_write);
-	endEnergy();
+	//endEnergy();
 	printf("+===================================================================================O\n\n\n");
 	
 	reg_free(reg);
