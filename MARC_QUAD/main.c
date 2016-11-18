@@ -179,7 +179,7 @@ int main(int argn, char *argv[]) {
     }
 
 	sleep(1);
-	startEnergy();
+	//startEnergy();
 	printf("\n\n+===================================================================================O\n");
 	printf("START TEST on REGISTER(%u,%u) of size %u for %u seconds:\n\n", writers, readers, size, duration);
 	
@@ -198,9 +198,9 @@ int main(int argn, char *argv[]) {
 	for(i = 0; i < readers; i++)  tot_count_read +=count_read[i];
 	printf("TOTAL READ: %u\n", tot_count_read);
 	printf("TOTAL OPER: %u\n", tot_count_read+count_write);
-	endEnergy();
+	//endEnergy();
 	printf("+===================================================================================O\n\n\n");
 	
-	reg_free(reg);
+	//reg_free(reg);
 	return 0;
 }

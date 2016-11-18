@@ -13,6 +13,9 @@
 #define NONE 0XffffffffffffffffLL
 #define MAX_TRIES 7
 
+//Nota: aumentando il numero di slot si potrebbe diminuire la probabilità che si trovi un registro pieno
+
+
 struct wf_register {
 	unsigned long long current; 		// composed by [32 bit of index ||32 bit of counter] 
 	struct register_slot *rw_space;		// curcular buffer of register slot to use for the current value
